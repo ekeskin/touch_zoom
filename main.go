@@ -105,6 +105,10 @@ func LowLevelMouseProc(nCode int, wParam w32.WPARAM, lParam w32.LPARAM) w32.LRES
 }
 
 func KeyboardProc(nCode int, wParam w32.WPARAM, lParam w32.LPARAM) w32.LRESULT {
+	if nCode < 0 {
+		return w32.CallNextHookEx(keyboardHook, nCode, wParam, lParam)
+	}
+
 	khs := (*KeyboardHookStruct)(unsafe.Pointer(lParam))
 
 	// we only care about F21
@@ -150,15 +154,13 @@ func main() {
 	// define the signals we want to handle
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
-	stop := make(chan struct{})
 
 	// start a goroutine to handle signals
 	go func() {
 		sig := <-signals
 		fmt.Printf("Housekeeping : %d\n", sig)
-		w32.UnhookWindowsHookEx(keyboardHook)
-
-		stop <- struct{}{}
+		r := w32.UnhookWindowsHookEx(keyboardHook)
+		fmt.Printf("UnhookWindowsHookEx : %t\n", r)
 
 		os.Exit(0)
 	}()
@@ -169,8 +171,6 @@ func main() {
 	if keyboardHook == 0 {
 		errCode := w32.GetLastError()
 		fmt.Printf("SetWindowsHookEx failed: %d\n", errCode)
-		// You might want to print a more detailed error message based on the error code.
-		//fmt.Printf("Error description: %s\n", w32.FormatMessage(errCode))
 		return
 	}
 
@@ -183,104 +183,11 @@ func main() {
 	getCursorPos.Call(uintptr(unsafe.Pointer(&p)))
 	fmt.Printf("CursorPos : %+v\n", p)
 
-	go func() {
-		var i = 0
-		for {
-			select {
-			case <-time.After(1 * time.Second):
-				fmt.Printf("[%012d] %d : %d %d\n", time.Now().Unix(), i, keyboardHook, mouseHook)
-				i++
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			// Process pending messages without blocking
-			w32.GetMessage(nil, 0, w32.WM_QUIT, w32.WM_QUIT+1)
-
-			// Check if stop signal received
-			select {
-			case <-stop:
-				return // Stop the goroutine
-			default:
-			}
-		}
-	}()
-
-	for w32.GetMessage(nil, 0, w32.WM_QUIT, w32.WM_QUIT+1) != 0 {
-		// NOP while not WM_QUIT
+	for w32.GetMessage(nil, 0, 0, 0) != 0 {
 		fmt.Printf("NOP\n")
 	}
 	fmt.Printf("Housekeeping\n")
 	w32.UnhookWindowsHookEx(keyboardHook)
-}
-
-func ZoomIn(p POINT) {
-	contacts := make([]PointerTouchInfo, 2)
-	length := len(contacts)
-
-	contacts[0].Init(1, p.X+TouchPointOffsetRelativeToMouse, p.Y-TouchPointOffsetRelativeToMouse)
-	contacts[1].Init(2, p.X-TouchPointOffsetRelativeToMouse, p.Y+TouchPointOffsetRelativeToMouse)
-
-	contacts[0].Press()
-	contacts[1].Press()
-
-	injectTouchInput.Call(uintptr(length), uintptr(unsafe.Pointer(&contacts[0])))
-
-	contacts[0].UpdateStart()
-	contacts[1].UpdateStart()
-	for i := 0; i < UpdateCount; i += 4 {
-		contacts[0].PointerInfo.PixelLocation.X += MoveDistancePerUpdate
-		contacts[0].PointerInfo.PixelLocation.Y -= MoveDistancePerUpdate
-
-		contacts[1].PointerInfo.PixelLocation.X -= MoveDistancePerUpdate
-		contacts[1].PointerInfo.PixelLocation.Y += MoveDistancePerUpdate
-
-		injectTouchInput.Call(uintptr(length), uintptr(unsafe.Pointer(&contacts[0])))
-		<-time.After(1 * time.Microsecond)
-	}
-
-	contacts[0].Release()
-	contacts[1].Release()
-	//contacts.PointerInfo.PointerFlags = PointerFlagUp
-	//fmt.Printf("%+v\n", contacts[0])
-
-	injectTouchInput.Call(uintptr(length), uintptr(unsafe.Pointer(&contacts[0])))
-}
-
-func ZoomOut(p POINT) {
-	contacts := make([]PointerTouchInfo, 2)
-	length := len(contacts)
-
-	contacts[0].Init(1, p.X+MoveDistancePerUpdate*UpdateCount, p.Y-MoveDistancePerUpdate*UpdateCount)
-	contacts[1].Init(2, p.X-MoveDistancePerUpdate*UpdateCount, p.Y+MoveDistancePerUpdate*UpdateCount)
-
-	contacts[0].Press()
-	contacts[1].Press()
-
-	injectTouchInput.Call(uintptr(length), uintptr(unsafe.Pointer(&contacts[0])))
-
-	contacts[0].UpdateStart()
-	contacts[1].UpdateStart()
-	for i := 0; i < UpdateCount; i += 3 {
-		contacts[0].PointerInfo.PixelLocation.X -= MoveDistancePerUpdate
-		contacts[0].PointerInfo.PixelLocation.Y += MoveDistancePerUpdate
-
-		contacts[1].PointerInfo.PixelLocation.X += MoveDistancePerUpdate
-		contacts[1].PointerInfo.PixelLocation.Y -= MoveDistancePerUpdate
-
-		injectTouchInput.Call(uintptr(length), uintptr(unsafe.Pointer(&contacts[0])))
-
-		<-time.After(1 * time.Microsecond)
-	}
-
-	contacts[0].Release()
-	contacts[1].Release()
-	//contacts.PointerInfo.PointerFlags = PointerFlagUp
-	//fmt.Printf("%+v\n", contacts[0])
-
-	injectTouchInput.Call(uintptr(length), uintptr(unsafe.Pointer(&contacts[0])))
 }
 
 func (p *PointerTouchInfo) Init(id uint32, x, y int32) {
