@@ -73,3 +73,10 @@ const (
 	TouchMaskOrientation           = 0x00000002
 	TouchMaskPressure              = 0x00000004
 )
+
+const (
+	MAX_TOUCH_COUNT         = 10
+	TOUCH_FEEDBACK_DEFAULT  = 0x1
+	TOUCH_FEEDBACK_INDIRECT = 0x2
+	TOUCH_FEEDBACK_NONE     = 0x3
+)
