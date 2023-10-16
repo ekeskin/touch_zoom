@@ -16,9 +16,12 @@ import (
 
 // Configuration Variables
 var (
-	TouchPointOffsetRelativeToMouse   int32 = 100
-	TouchPointOffsetZoomOutMultiplier int32 = 3
-	MoveDistancePerUpdate             int32 = 3
+	TouchPointOffsetRelativeToMouse   int32  = 100
+	TouchPointOffsetZoomOutMultiplier int32  = 3
+	ZoomDistancePerUpdate             int32  = 3
+	MoveHandlingEnabled               bool   = false
+	MoveHandlingNatural               bool   = true
+	TriggerKey                        uint32 = w32.VK_F21
 )
 
 var (
@@ -35,6 +38,8 @@ var moduleInstance w32.HINSTANCE
 var touches = make([]PointerTouchInfo, 2)
 var touchLength = 2
 var signals = make(chan os.Signal, 1)
+
+var lastMovePosition w32.POINT
 
 func main() {
 	runtime.LockOSThread()
@@ -61,9 +66,12 @@ func main() {
 }
 
 func mouseHookCallback(nCode int, wParam w32.WPARAM, lParam w32.LPARAM) w32.LRESULT {
+	if nCode != 0 {
+		return w32.CallNextHookEx(keyboardHook, nCode, wParam, lParam)
+	}
 	mhs := (*MouseHookStruct)(unsafe.Pointer(lParam))
-	_ = mhs
-	if nCode == 0 && (wParam == w32.WM_MOUSEWHEEL) {
+	switch wParam {
+	case w32.WM_MOUSEWHEEL:
 		if firstEvent {
 			var offset int32
 			if mhs.hwnd == 0x00780000 {
@@ -74,6 +82,7 @@ func mouseHookCallback(nCode int, wParam w32.WPARAM, lParam w32.LPARAM) w32.LRES
 			firstEvent = false
 			touches[0].Init(0, mhs.pt.X+offset, mhs.pt.Y-offset)
 			touches[1].Init(1, mhs.pt.X-offset, mhs.pt.Y+offset)
+
 			touches[0].Press()
 			touches[1].Press()
 			injectTouchInput.Call(uintptr(touchLength), uintptr(unsafe.Pointer(&touches[0])))
@@ -81,29 +90,53 @@ func mouseHookCallback(nCode int, wParam w32.WPARAM, lParam w32.LPARAM) w32.LRES
 		}
 		if mhs.hwnd == 0x00780000 {
 			touches[0].UpdateStart()
-			touches[1].UpdateStart()
-			touches[0].PointerInfo.PixelLocation.X += MoveDistancePerUpdate
-			touches[0].PointerInfo.PixelLocation.Y -= MoveDistancePerUpdate
+			touches[0].MoveRel(ZoomDistancePerUpdate, ZoomDistancePerUpdate)
 
-			touches[1].PointerInfo.PixelLocation.X -= MoveDistancePerUpdate
-			touches[1].PointerInfo.PixelLocation.Y += MoveDistancePerUpdate
+			touches[1].UpdateStart()
+			touches[1].MoveRel(-ZoomDistancePerUpdate, -ZoomDistancePerUpdate)
 
 			injectTouchInput.Call(uintptr(touchLength), uintptr(unsafe.Pointer(&touches[0])))
 
 		} else if mhs.hwnd == 0xFF880000 {
 
 			touches[0].UpdateStart()
-			touches[1].UpdateStart()
-			touches[0].PointerInfo.PixelLocation.X -= MoveDistancePerUpdate
-			touches[0].PointerInfo.PixelLocation.Y += MoveDistancePerUpdate
+			touches[0].MoveRel(-ZoomDistancePerUpdate, -ZoomDistancePerUpdate)
 
-			touches[1].PointerInfo.PixelLocation.X += MoveDistancePerUpdate
-			touches[1].PointerInfo.PixelLocation.Y -= MoveDistancePerUpdate
+			touches[1].UpdateStart()
+			touches[1].MoveRel(ZoomDistancePerUpdate, ZoomDistancePerUpdate)
 
 			injectTouchInput.Call(uintptr(touchLength), uintptr(unsafe.Pointer(&touches[0])))
-
 		}
 		return 1
+	case w32.WM_MOUSEMOVE:
+		if !MoveHandlingEnabled {
+			return w32.CallNextHookEx(keyboardHook, nCode, wParam, lParam)
+		}
+		if firstEvent {
+			firstEvent = false
+			touches[0].Init(0, mhs.pt.X, mhs.pt.Y)
+			touches[0].Press()
+			injectTouchInput.Call(1, uintptr(unsafe.Pointer(&touches[0])))
+
+			lastMovePosition = mhs.pt
+			return 1
+		}
+
+		touches[0].UpdateStart()
+		if MoveHandlingNatural {
+			diff := w32.POINT{X: mhs.pt.X - lastMovePosition.X, Y: mhs.pt.Y - lastMovePosition.Y}
+			touches[0].MoveRel(-diff.X, -diff.Y)
+		} else {
+			touches[0].MoveAbs(mhs.pt.X, mhs.pt.Y)
+		}
+
+		injectTouchInput.Call(1, uintptr(unsafe.Pointer(&touches[0])))
+
+		lastMovePosition = mhs.pt
+		return 0
+		break
+	default:
+		return w32.CallNextHookEx(keyboardHook, nCode, wParam, lParam)
 	}
 
 	return w32.CallNextHookEx(keyboardHook, nCode, wParam, lParam)
@@ -116,7 +149,7 @@ func keyboardHookCallback(nCode int, wParam w32.WPARAM, lParam w32.LPARAM) w32.L
 
 	khs := (*KeyboardHookStruct)(unsafe.Pointer(lParam))
 
-	if khs.vkCode != w32.VK_F21 {
+	if khs.vkCode != TriggerKey {
 		return w32.CallNextHookEx(keyboardHook, nCode, wParam, lParam)
 	}
 
@@ -154,10 +187,34 @@ func onReady() {
 	systray.SetIcon(icon.Data)
 	systray.SetTitle("Touch Zoom")
 	systray.SetTooltip("Touch Zoom")
+
+	mMoveHandlingToggle := systray.AddMenuItem("✘ Move Handling Disabled", "enable or disable mouse movement handling")
+	mMoveHandlingNatural := systray.AddMenuItem("Natural Move Handling", "When enabled, mouse movements will act as if you are touching the screen directly")
+	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Quit the whole app")
 	go func() {
-		<-mQuit.ClickedCh
-		systray.Quit()
+		for {
+			select {
+			case <-mMoveHandlingToggle.ClickedCh:
+				MoveHandlingEnabled = !MoveHandlingEnabled
+				if MoveHandlingEnabled {
+					mMoveHandlingToggle.SetTitle("✓ Move Handling Enabled")
+					mMoveHandlingNatural.Enable()
+				} else {
+					mMoveHandlingToggle.SetTitle("✘ Move Handling Disabled")
+					mMoveHandlingNatural.Disabled()
+				}
+			case <-mMoveHandlingNatural.ClickedCh:
+				MoveHandlingNatural = !MoveHandlingNatural
+				if MoveHandlingNatural {
+					mMoveHandlingNatural.SetTitle("Natural Move Handling")
+				} else {
+					mMoveHandlingNatural.SetTitle("Inverted Move Handling")
+				}
+			case <-mQuit.ClickedCh:
+				systray.Quit()
+			}
+		}
 	}()
 }
 
@@ -201,4 +258,14 @@ func (p *PointerTouchInfo) Release() {
 
 func (p *PointerTouchInfo) UpdateStart() {
 	p.PointerInfo.PointerFlags = PointerFlagUpdate | PointerFlagInContact | PointerFlagInRange
+}
+
+func (p *PointerTouchInfo) MoveRel(x, y int32) {
+	p.PointerInfo.PixelLocation.X += x
+	p.PointerInfo.PixelLocation.Y -= y
+}
+
+func (p *PointerTouchInfo) MoveAbs(x, y int32) {
+	p.PointerInfo.PixelLocation.X = x
+	p.PointerInfo.PixelLocation.Y = y
 }
