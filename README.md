@@ -19,11 +19,17 @@ There is a small delay between the mouse wheel event and the touch screen event,
 
 I have bound ```F21``` to one of the keys on my mouse using Logi Options software. It can be bound to any key using AutoHotKey or similar software.
 
+Since this software installs a global keyboard hook, I won't be providing a pre-built binary. You can build it yourself.
+
 ### Move mode
 
 There is an experimental mode that allows you to simulate moving the screen around. Can be enabled in the systray icon menu.
 I still don't like it yet, so it is disabled by default. Feel free to play with it.
-(When blocking the mouse move event, windows doesn't update the mouse cursor position, so it is not possible to move the mouse cursor around the screen while in this mode. I am still looking for a solution to this problem.)
+
+When blocking the mouse move event, windows doesn't update the mouse cursor position. 
+So it is not possible to move the mouse cursor around the screen if we block propagation of the mouse move event.
+Currently, we're not blocking the mouse move event, but this has a side effect of also moving the mouse cursor around the screen.
+I am still looking for a solution to this problem.
 
 ## How it works
 
